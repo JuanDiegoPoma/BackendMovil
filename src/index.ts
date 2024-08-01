@@ -9,10 +9,10 @@ import * as path from 'path';
 import fs from 'fs';
 
 
-const db = require('./db');  // Importa la configuración de la base de datos
-
 // Configuración de dotenv para cargar variables de entorno desde el archivo .env
 dotenv.config();
+
+let consultas: string[] = [];
 
 // Configuración de OpenAI API
 const configuration = new Configuration({
@@ -39,32 +39,54 @@ const PORT = process.env.PORT || 9012;
 // Configuración de multer para la subida de archivos
 const storage = multer.diskStorage({
   destination: (req, file, callback) => {
-    callback(null, uploadDir);
+    callback(null, uploadDir); // Establecer la carpeta de destino para los archivos subidos
   },
   filename: (req, file, callback) => {
     callback(null, file.originalname);
   },
 });
-
 const upload = multer({
   storage,
   fileFilter(req, file, callback) {
     const fileExtension = path.extname(file.originalname).toLowerCase();
     if (fileExtension !== '.pdf') {
-      return callback(new Error('Only PDFs are allowed'));
+      return callback(new Error('Only PDFs are allowed')); // Solo permitir archivos PDF
     }
     callback(null, true);
   },
 });
 
-const generatePrompt = (numberToConvert: number) => {
-  return `Tu tienes un rol de convertidor binario y requiero que conviertas este numero ${numberToConvert} a binario`;
-};
+// Función para generar el prompt para clasificar texto
+const ClasificarPrompt = (text: string): string => {
+  // Generar el listado de consultas
+  let listado: string = consultas.map((consulta) => `${consulta}`).join('\n');
 
-const ClasificarPrompt = (text: string) => {
-  return `Clasifique el siguiente texto en una de estas categorías: Cine, Politica, Religion.\n\nText: "${text}`;
-};
+  return `
+Tienes el rol de clasificar el texto que se te proporcione de la siguiente manera:
+Ejemplo de entrada:
 
+1.La política es corrupta
+
+El número que ingrese el usuario antes del texto puede ser cualquier número.
+Por favor, sigue estos pasos:
+
+1. Clasifica el texto en una de las categorías: 1. Cine, 2. Política, 3. Religión.
+ Ejemplo de salida: 
+1.La política es corrupta - 2. Politica
+2. Guarda el número y el texto ingresado con su respectiva clasificación.
+3. Vas a guardar en una lista todas las consultas que se te envíen en varias peticiones, junto con las clasificaciones de cada texto, para luego mostrar el texto con su clasificación de la siguiente manera:
+
+Ejemplo de listado:
+1. Dios es bueno - 3. Religión
+2. La política es corrupta - 2. Política
+30. Ayer se estrenó una película - 1. Cine
+
+Y así, irás agregando en la lista de manera vertical todos los demás textos que se ingresen y su respectiva clasificación.
+4. Finalmente, actualiza y muestra el listado con la ultima consulta realizada.
+Listado actual:
+${listado}
+Texto: "${text}"`;
+};
 
 let names = [
   {
@@ -80,12 +102,46 @@ let names = [
 ];
 
 // Rutas de la API
+
+//Ruta de clasificar texto
+app.post('/clasificartexto', async (req: Request, res: Response) => {
+  const { text } = req.body;
+  try {
+    const prompt = ClasificarPrompt(text); // Generar el prompt usando la función ClasificarPrompt
+    const completion = await openai.createChatCompletion({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.2,
+    });
+    const result = completion.data.choices?.[0]?.message?.content?.trim(); // Obtener el resultado del modelo
+    const tokens = completion.data.usage?.total_tokens; // Obtener el número de tokens utilizados
+    console.log('Result:', result);
+    console.log('Tokens:', tokens);
+    if (result) {
+      consultas.push(`${text} - ${result}`); // Agregar el texto y la clasificación a la lista de consultas
+      let listado: string = consultas.join('\n');  // Generar el listado actualizado
+      res.send({ result: listado, tokens });
+    } else {
+      res.status(500).send({ error: 'No se pudo obtener una respuesta válida del modelo' });
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+    res.status(500).send({ error: errorMessage });
+  }
+});
+
+//Demas Rutas
+// Ruta para verificar si el servidor está funcionando
 app.get('/ping', (req: Request, res: Response) => {
   console.log('alguien ha dado pin!!');
   res.setHeader('Content-Type', 'application/json');
   res.send('pong');
 });
 
+// Ruta para subir archivos PDF y procesarlos
 app.post('/upload', upload.single('file'), async (req, res) => {
   console.log('File:', req.file);
   console.log('Body:', req.body);
@@ -105,7 +161,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     res.status(500).send({ error: error instanceof Error ? error.message : 'Error desconocido' });
   }
 });
-
+//Otras Rutas
 app.get('/hola/:nombre/:apellido', (req: Request, res: Response) => {
   console.log('alguien ha dado pin!!');
   res.setHeader('Content-Type', 'application/json');
@@ -113,90 +169,16 @@ app.get('/hola/:nombre/:apellido', (req: Request, res: Response) => {
   console.log('alguien ha ingresado su nombre');
   res.send({ nombre, apellido });
 });
-
 app.get('/nombres', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'application/json');
   res.send(names);
 });
-
 app.post('/nombres', (req: Request, res: Response) => {
   const item = { ...req.body, id: uuidv4() };
   names.push(item);
   res.send(item);
 });
-
-
-//NUEVO ENDPOINT
- 
-// Ruta para usar OpenAI para clasificar el texto
-
-/*
-app.post("/classify-text", async (req, res) => {
-  const { text } = req.body;
-
-  try {
-      const configuration = new Configuration({
-          apiKey: process.env.OPENAI_API_KEY,
-      });
-      const openai = new OpenAIApi(configuration);
-
-      const prompt = `Classify the following text into one of these categories: cinema, politics, religion.\n\nText: "${text}"`;
-
-      const completion = await openai.createChatCompletion({
-          model: "gpt-3.5-turbo",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.2,
-      });
-
-      const result = completion.data.choices?.[0]?.message?.content?.trim();
-
-      // Guarda la clasificación en la base de datos SQLite
-      db.run("INSERT INTO classifications (originalText, classification) VALUES (?, ?)", [text, result], function(err) {
-          if (err) {
-              return console.error(err.message);
-          }
-          res.send({
-              id: this.lastID,
-              originalText: text,
-              classification: result,
-          });
-      });
-  } catch (error) {
-      console.error(error);
-      res.status(500).send("Error using OpenAI.");
-  }
-});*/
-
-app.post('/openapi', async (req: Request, res: Response) => {
-  const { prompt } = req.body;
-  try {
-    const completion = await openai.createChatCompletion({
-      model: 'gpt-4-0613',
-      messages: [
-        { role: 'system', content: 'You are a helpful assistant.' },
-        { role: 'user', content: generatePrompt(prompt) }
-      ],
-      temperature: 0.1,
-    });
-
-    const result = completion.data.choices?.[0]?.message?.content?.trim();
-    const tokens = completion.data.usage?.total_tokens; // Obtener el número de tokens utilizados
-
-    console.log('Result:', result);
-    console.log('Tokens:', tokens);
-
-    if (result) {
-      res.send({ result, tokens }); // Incluir los tokens en la respuesta
-    } else {
-      res.status(500).send({ error: 'No se pudo obtener una respuesta válida del modelo' });
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
-    res.status(500).send({ error: errorMessage });
-  }
-});
-
-//EndPoint clasificar texto
+//Ruta de clasificar texto
 app.post('/clasificartexto', async (req: Request, res: Response) => {
   const { text } = req.body;
   try {
@@ -205,19 +187,16 @@ app.post('/clasificartexto', async (req: Request, res: Response) => {
       model: 'gpt-3.5-turbo',
       messages: [
         { role: 'system', content: 'You are a helpful assistant.' },
-        { role: 'user', content: ClasificarPrompt(text) }
+        { role: 'user', content: prompt }
       ],
       temperature: 0.2,
     });
-
     const result = completion.data.choices?.[0]?.message?.content?.trim();
     const tokens = completion.data.usage?.total_tokens; // Obtener el número de tokens utilizados
-
-    console.log('Result:', result);
-    console.log('Tokens:', tokens);
-
     if (result) {
-      res.send({ result, tokens }); // Incluir los tokens en la respuesta
+      consultas.push(`${text} - ${result}`);
+      let listado: string = consultas.join('\n');
+      res.send({ result: listado, tokens });
     } else {
       res.status(500).send({ error: 'No se pudo obtener una respuesta válida del modelo' });
     }
@@ -226,9 +205,6 @@ app.post('/clasificartexto', async (req: Request, res: Response) => {
     res.status(500).send({ error: errorMessage });
   }
 });
-
-
-
 app.delete('/nombres/:id', (req: Request, res: Response) => {
   names = names.filter(n => n.id !== req.params.id);
   res.status(204).end();
@@ -246,7 +222,6 @@ app.put('/nombres/:id', (req: Request, res: Response) => {
   names[index] = { ...req.body, id: req.params.id };
   res.status(204).end();
 });
-
 // Iniciar el servidor
 app.listen(PORT, () => {
   console.log(`Running application on port ${PORT}`);
